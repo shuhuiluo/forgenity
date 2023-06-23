@@ -10,6 +10,8 @@ contract Forgenity is Test {
     bytes32 internal initCodeHash;
     // The number of leading zeros in hex.
     uint256 internal constant leadingZeros = 4;
+    // The maximum gas spent on a given input salt on each test run.
+    uint256 internal constant gasPerSalt = 1e9;
 
     // emitted when a vanity address is found
     error Found(bytes32 salt, address addr);
@@ -57,6 +59,7 @@ contract Forgenity is Test {
     function testVanity(bytes32 salt) public view {
         bytes32 _initCodeHash = initCodeHash;
         uint256 nonzeroBits = 160 - leadingZeros * 4;
+        uint256 gasThreshold = gasleft() - gasPerSalt;
         address res;
         assembly ("memory-safe") {
             // Cache the free memory pointer.
@@ -65,7 +68,7 @@ contract Forgenity is Test {
             // Prefix the factory address with 0xff.
             mstore(0, or(factory, 0xff0000000000000000000000000000000000000000))
             mstore(0x40, _initCodeHash)
-            for {} lt(gas(), 9223372036854770000) { salt := add(salt, 1) } {
+            for {} gt(gas(), gasThreshold) { salt := add(salt, 1) } {
                 mstore(0x20, salt)
                 // Compute the CREATE2 address and clean the upper 96 bits.
                 res := and(keccak256(0x0b, 0x55), 0xffffffffffffffffffffffffffffffffffffffff)
@@ -74,7 +77,7 @@ contract Forgenity is Test {
             // Restore the free memory pointer.
             mstore(0x40, fmp)
         }
-        if (uint256(uint160(res)) >> nonzeroBits == 0) {
+        if (res != address(0) && uint256(uint160(res)) >> nonzeroBits == 0) {
             revert Found(salt, res);
         } else {
             console.log("out of gas");
