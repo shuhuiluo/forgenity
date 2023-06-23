@@ -5,14 +5,33 @@ import "forge-std/Test.sol";
 import "../src/Counter.sol";
 
 contract Forgenity is Test {
-    address internal constant factory = 0x1F98431c8aD98523631AE4a59f267346ea31F984;
-    bytes32 internal constant initCodeHash = keccak256(type(Counter).creationCode);
+    // https://github.com/pcaversaccio/create2deployer
+    address internal constant factory = 0x13b0D85CcB8bf860b6b79AF3029fCA081AE9beF2;
+    bytes32 internal initCodeHash;
     // The number of leading zeros in hex.
-    uint256 internal constant leadingZeros = 5;
+    uint256 internal constant leadingZeros = 4;
 
+    // emitted when a vanity address is found
     error Found(bytes32 salt, address addr);
+    // emitted when the deployment fails
+    error DeploymentFailed();
 
-    function setUp() public {}
+    function setUp() public {
+        bytes memory initCode = bytes.concat(type(Counter).creationCode, encodeArguments());
+        initCodeHash = keccak256(initCode);
+        // check that the init code works
+        address addr;
+        assembly ("memory-safe") {
+            addr := create2(0, add(initCode, 0x20), mload(initCode), 0)
+        }
+        if (addr != computeCreate2Address(address(this), 0, initCodeHash)) {
+            revert DeploymentFailed();
+        }
+    }
+
+    function encodeArguments() internal pure returns (bytes memory) {
+        return abi.encode(0);
+    }
 
     /// @notice Efficiently computes the CREATE2 address
     function computeCreate2Address(address _factory, bytes32 salt, bytes32 _initCodeHash)
@@ -35,18 +54,9 @@ contract Forgenity is Test {
         }
     }
 
-    /// @notice Get the mask to filter the leading zeros
-    /// @param n The number of leading zeros in hex
-    /// @return mask The mask to filter the leading zeros
-    function leadingZerosMask(uint256 n) internal pure returns (uint256 mask) {
-        assembly {
-            mask := not(sub(shl(sub(256, shl(2, n)), 1), 1))
-        }
-    }
-
     function testVanity(bytes32 salt) public view {
         bytes32 _initCodeHash = initCodeHash;
-        uint256 mask = leadingZerosMask(leadingZeros + 24);
+        uint256 nonzeroBits = 160 - leadingZeros * 4;
         address res;
         assembly ("memory-safe") {
             // Cache the free memory pointer.
@@ -59,12 +69,12 @@ contract Forgenity is Test {
                 mstore(0x20, salt)
                 // Compute the CREATE2 address and clean the upper 96 bits.
                 res := and(keccak256(0x0b, 0x55), 0xffffffffffffffffffffffffffffffffffffffff)
-                if iszero(and(res, mask)) { break }
+                if iszero(shr(nonzeroBits, res)) { break }
             }
             // Restore the free memory pointer.
             mstore(0x40, fmp)
         }
-        if (uint256(uint160(res)) & mask == 0) {
+        if (uint256(uint160(res)) >> nonzeroBits == 0) {
             revert Found(salt, res);
         } else {
             console.log("out of gas");
