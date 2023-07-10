@@ -6,12 +6,12 @@ import "../src/Counter.sol";
 
 contract Forgenity is Test {
     // https://github.com/pcaversaccio/create2deployer
-    address internal constant factory = 0x13b0D85CcB8bf860b6b79AF3029fCA081AE9beF2;
+    address internal constant create2deployer = 0x13b0D85CcB8bf860b6b79AF3029fCA081AE9beF2;
     bytes32 internal initCodeHash;
     // The number of leading zeros in hex.
-    uint256 internal constant leadingZeros = 4;
-    // The maximum gas spent on a given input salt on each test run.
-    uint256 internal constant gasPerSalt = 1e9;
+    uint256 internal constant leadingZeros = 6;
+    // The gas limit on each test run for a given input salt.
+    uint256 internal constant gasPerRun = 1e6;
 
     // emitted when a vanity address is found
     error Found(bytes32 salt, address addr);
@@ -36,7 +36,7 @@ contract Forgenity is Test {
     }
 
     /// @notice Efficiently computes the CREATE2 address
-    function computeCreate2Address(address _factory, bytes32 salt, bytes32 _initCodeHash)
+    function computeCreate2Address(address _deployer, bytes32 salt, bytes32 _initCodeHash)
         internal
         pure
         returns (address res)
@@ -44,9 +44,9 @@ contract Forgenity is Test {
         assembly ("memory-safe") {
             // Cache the free memory pointer.
             let fmp := mload(0x40)
-            // abi.encodePacked(hex'ff', factory, salt, initCodeHash)
-            // Prefix the factory address with 0xff.
-            mstore(0, or(_factory, 0xff0000000000000000000000000000000000000000))
+            // abi.encodePacked(hex'ff', deployer, salt, initCodeHash)
+            // Prefix the deployer address with 0xff.
+            mstore(0, or(_deployer, 0xff0000000000000000000000000000000000000000))
             mstore(0x20, salt)
             mstore(0x40, _initCodeHash)
             // Compute the CREATE2 address and clean the upper bits.
@@ -56,17 +56,19 @@ contract Forgenity is Test {
         }
     }
 
-    function testVanity(bytes32 salt) public view {
+    /// @notice Test to see the gas spent on each loop iteration.
+    function testComputeCreate2Address() public view {
         bytes32 _initCodeHash = initCodeHash;
         uint256 nonzeroBits = 160 - leadingZeros * 4;
-        uint256 gasThreshold = gasleft() - gasPerSalt;
+        uint256 gasThreshold = gasleft() - gasPerRun;
         address res;
+        uint256 salt = 0;
         assembly ("memory-safe") {
             // Cache the free memory pointer.
             let fmp := mload(0x40)
-            // abi.encodePacked(hex'ff', factory, salt, initCodeHash)
-            // Prefix the factory address with 0xff.
-            mstore(0, or(factory, 0xff0000000000000000000000000000000000000000))
+            // abi.encodePacked(hex'ff', deployer, salt, initCodeHash)
+            // Prefix the deployer address with 0xff.
+            mstore(0, or(create2deployer, 0xff0000000000000000000000000000000000000000))
             mstore(0x40, _initCodeHash)
             for {} gt(gas(), gasThreshold) { salt := add(salt, 1) } {
                 mstore(0x20, salt)
@@ -77,7 +79,36 @@ contract Forgenity is Test {
             // Restore the free memory pointer.
             mstore(0x40, fmp)
         }
+        console.log("Gas per loop: %d", (gasPerRun + salt - 1) / salt);
+    }
+
+    /// forge-config: default.fuzz.runs = 1000000000
+    function testVanity(bytes32 salt) public view {
+        bytes32 _initCodeHash = initCodeHash;
+        uint256 nonzeroBits = 160 - leadingZeros * 4;
+        uint256 gasThreshold = gasleft() - gasPerRun;
+        address res;
+        assembly ("memory-safe") {
+            // Cache the free memory pointer.
+            let fmp := mload(0x40)
+            // abi.encodePacked(hex'ff', deployer, salt, initCodeHash)
+            // Prefix the deployer address with 0xff.
+            mstore(0, or(create2deployer, 0xff0000000000000000000000000000000000000000))
+            mstore(0x40, _initCodeHash)
+            // Each loop takes 133 gas.
+            for {} gt(gas(), gasThreshold) { salt := add(salt, 1) } {
+                mstore(0x20, salt)
+                // Compute the CREATE2 address and clean the upper 96 bits.
+                res := and(keccak256(0x0b, 0x55), 0xffffffffffffffffffffffffffffffffffffffff)
+                if iszero(shr(nonzeroBits, res)) { break }
+            }
+            // Restore the free memory pointer.
+            mstore(0x40, fmp)
+        }
         if (res != address(0) && uint256(uint160(res)) >> nonzeroBits == 0) {
+            console.log("Found address %s with %d leading zeros", res, leadingZeros);
+            console.log("created with salt");
+            console.logBytes32(salt);
             revert Found(salt, res);
         } else {
             console.log("out of gas");
